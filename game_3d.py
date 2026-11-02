@@ -11,9 +11,12 @@ from graphics.planet_generator import (
     gas_giant_palette,
     generate_city_light_texture,
     generate_cloud_texture,
+    generate_habitat_light_texture,
     generate_planet_texture,
     generate_starfield_surface,
 )
+
+from graphics.star import format_population
 
 PLANET_TYPE_LABELS = {
     'terrestrial': 'Planeta terrestre',
@@ -138,13 +141,17 @@ class PlanetViewer3D:
             self._draw_rings(screen, center, sphere_radius, seed, card,
                              front=False)
 
-        if planet_type == 'terrestrial':
-            capacity = planet.capacity_info()
-            intensity = city_light_intensity(
-                planet.developement, planet.population,
-                capacity['max_dev'], capacity['max_pop'],
-            )
-        else:
+        habitats = int(getattr(planet, 'habitats', 0))
+        capacity = planet.capacity_info()
+        intensity = city_light_intensity(
+            planet.developement, planet.population,
+            capacity['max_dev'], capacity['max_pop'],
+        )
+        if planet_type != 'terrestrial':
+            intensity = min(1.0, intensity * 0.85 + 0.06 * habitats)
+        elif habitats:
+            intensity = min(1.0, intensity + 0.03 * habitats)
+        if not getattr(planet, 'is_colonized', False):
             intensity = 0.0
         sphere = self._render_sphere(planet, sphere_radius, intensity)
         screen.blit(sphere, (
@@ -155,26 +162,40 @@ class PlanetViewer3D:
         if rings:
             self._draw_rings(screen, center, sphere_radius, seed, card,
                              front=True)
+        if habitats:
+            self._draw_habitat_stations(
+                screen, center, sphere_radius, habitats)
 
         suitability = max(
             planet.life_suitability.values(), default=0.0)
         label = PLANET_TYPE_LABELS.get(planet_type, 'Planeta')
         if rings:
             label += ' com anéis'
+        expansion_line = ''
+        if getattr(planet, 'is_colonized', False):
+            info = planet.expansion_info()
+            remaining = (
+                "mundo plenamente expandido" if info['percent'] >= 1.0
+                and info['level'] >= info['max'] else
+                f"próximo nível em ~{info['years_left']:.0f} anos")
+            expansion_line = (
+                f"Expansão {info['level']}/{info['max']}"
+                f"  ·  {info['percent']:.0%}  ·  {remaining}"
+                f"  ·  Habitats {habitats}")
         details = (
             f"{label}  ·  raio {planet.radius:.3f}",
             f"Desenvolvimento {planet.developement:.2f}"
-            f"  |  População {planet.population:.0f}",
+            f"  |  População {format_population(planet.population)}",
+        ) + ((expansion_line,) if expansion_line else ()) + (
             f"Simbiose máxima {suitability:.2f}"
-            + (f"  |  Luzes urbanas {intensity:.0%}"
-               if planet_type == 'terrestrial' else ''),
+            f"  |  Luzes urbanas {intensity:.0%}",
             "Arraste para girar  ·  roda para zoom  ·  Esc/V fecha",
         )
-        line_y = card.bottom - 88
+        line_y = card.bottom - 88 - (19 if expansion_line else 0)
         for index, text in enumerate(details):
             rendered = body_font.render(
-                text, True, (137, 180, 203) if index == 3
-                else (203, 222, 235),
+                text, True, (137, 180, 203)
+                if index == len(details) - 1 else (203, 222, 235),
             )
             screen.blit(rendered, (card.x + 24, line_y + index * 19))
 
@@ -200,6 +221,23 @@ class PlanetViewer3D:
             pygame.draw.circle(screen, color, (x, y), dot)
             if dot > 1:
                 pygame.draw.circle(screen, color, (x, y - 1), dot - 1)
+
+    def _draw_habitat_stations(self, screen, center, radius, count):
+        """Estações orbitais pálidas girando ao redor do mundo."""
+        cx, cy = center
+        orbit = radius * 1.28
+        tilt = 0.35
+        dot = max(2, radius // 48)
+        phase = pygame.time.get_ticks() / 1000.0 * 0.25
+        for index in range(min(count, 10)):
+            angle = phase + math.tau * index / max(1, min(count, 10))
+            x = cx + orbit * math.cos(angle)
+            y = cy + orbit * tilt * math.sin(angle)
+            depth = math.sin(angle)
+            color = (178, 232, 255) if depth >= 0 else (96, 150, 190)
+            pygame.draw.circle(screen, color, (int(x), int(y)), dot)
+            pygame.draw.circle(screen, (40, 74, 100),
+                               (int(x), int(y)), dot + 1, 1)
 
     def _draw_logistics(self, screen, planet, body_font, card):
         panel = pygame.Rect(
@@ -295,10 +333,17 @@ class PlanetViewer3D:
         if layers is None:
             texture = self._texture_for(planet)
             seed = self._seed_for(planet)
-            if planet_type_of(planet) != 'terrestrial':
-                layers = (texture, None, None)
+            planet_type = planet_type_of(planet)
+            size = texture.get_size()
+            if planet_type != 'terrestrial':
+                layers = (
+                    texture,
+                    None,
+                    generate_habitat_light_texture(
+                        seed, size, self.detail_level,
+                        style=planet_type),
+                )
             else:
-                size = texture.get_size()
                 layers = (
                     texture,
                     generate_cloud_texture(seed, size),
@@ -389,12 +434,23 @@ class PlanetViewer3D:
         sun /= np.linalg.norm(sun)
         illumination = (
             world_x * sun[0] + world_y * sun[1] + world_z * sun[2])
-        daylight = np.clip(illumination, 0.0, 1.0)
+        transition = np.clip((illumination + 0.22) / 0.60, 0.0, 1.0)
+        daylight = transition * transition * (3.0 - 2.0 * transition)
         ambient = {'terrestrial': 0.18, 'gas_giant': 0.15,
                    'asteroid': 0.06}.get(planet_type, 0.18)
         color = _sample_pixels_bilinear(
             texture, sample_x, sample_y) * (
                 ambient + (1.0 - ambient) * daylight[..., None])
+
+        # Aro de Fresnel: atm/espalho suave na borda do disco.
+        fresnel = np.clip(1.0 - screen_z, 0.0, 1.0) ** 2.6 * visible
+        rim = fresnel * (0.15 + 0.85 * daylight)
+        rim_tint = {'terrestrial': (120.0, 170.0, 255.0),
+                    'gas_giant': (150.0, 180.0, 225.0),
+                    'asteroid': (120.0, 140.0, 170.0)}.get(
+                        planet_type, (120.0, 170.0, 255.0))
+        color += (np.asarray(rim_tint, dtype=np.float32)
+                  * rim[..., None] * 0.45)
 
         if cloud_pixels is not None:
             clouds = _sample_pixels_bilinear(
@@ -417,7 +473,7 @@ class PlanetViewer3D:
                 _sample_pixels_bilinear(
                     city_alpha, sample_x, sample_y) / 255.0
                 * math.pow(min(1.0, max(0.0, city_intensity)), 0.35)
-                * np.clip(-illumination, 0.0, 1.0) ** 1.1
+                * (1.0 - daylight) ** 1.15
             )
             city_opacity = np.clip(city_opacity * 1.9, 0.0, 1.0)
             color = (
