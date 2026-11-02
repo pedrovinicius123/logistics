@@ -5,6 +5,8 @@ import pygame
 
 from graphics.planet_generator import (
     PLANET_SUN_DIRECTION,
+    _growth_factor,
+    _mix_rgb,
     _sample_pixels_bilinear,
     asteroid_radius_factor,
     city_light_intensity,
@@ -17,6 +19,12 @@ from graphics.planet_generator import (
 )
 
 from graphics.star import format_population
+
+
+def planet_stage(planet) -> float:
+    """Retrato estéril → Gaia do mundo (0 rocha, 1 vida plena)."""
+    stage = getattr(planet, 'terraforming_stage', None)
+    return min(1.0, max(0.0, float(stage()))) if callable(stage) else 1.0
 
 PLANET_TYPE_LABELS = {
     'terrestrial': 'Planeta terrestre',
@@ -156,9 +164,13 @@ class PlanetViewer3D:
         sphere = self._render_sphere(planet, sphere_radius, intensity)
         screen.blit(sphere, (
             center[0] - sphere_radius, center[1] - sphere_radius))
+        stage = planet_stage(planet)
         if planet_type == 'terrestrial':
-            pygame.draw.circle(screen, (182, 219, 245), center,
-                               sphere_radius, 1)
+            pygame.draw.circle(
+                screen,
+                _mix_rgb((150, 150, 152), (182, 219, 245),
+                         _growth_factor(stage)),
+                center, sphere_radius, 1)
         if rings:
             self._draw_rings(screen, center, sphere_radius, seed, card,
                              front=True)
@@ -182,12 +194,15 @@ class PlanetViewer3D:
                 f"Expansão {info['level']}/{info['max']}"
                 f"  ·  {info['percent']:.0%}  ·  {remaining}"
                 f"  ·  Habitats {habitats}")
+        stage_name = ('Gaia' if stage >= 0.95 else
+                      'estéril' if stage <= 0.30 else 'em transformação')
         details = (
             f"{label}  ·  raio {planet.radius:.3f}",
             f"Desenvolvimento {planet.developement:.2f}"
             f"  |  População {format_population(planet.population)}",
         ) + ((expansion_line,) if expansion_line else ()) + (
             f"Simbiose máxima {suitability:.2f}"
+            f"  |  Retrato {stage:.0%} ({stage_name})"
             f"  |  Luzes urbanas {intensity:.0%}",
             "Arraste para girar  ·  roda para zoom  ·  Esc/V fecha",
         )
@@ -316,19 +331,20 @@ class PlanetViewer3D:
             y += 17
 
     def _texture_for(self, planet):
-        key = (id(planet), self.detail_level)
+        key = (id(planet), self.detail_level, round(planet_stage(planet), 2))
         texture = self._texture_cache.get(key)
         if texture is None:
             seed = self._seed_for(planet)
             texture = generate_planet_texture(
                 planet.life_suitability, seed,
                 detail_level=self.detail_level,
-                planet_type=planet_type_of(planet))
+                planet_type=planet_type_of(planet),
+                greening=planet_stage(planet))
             self._texture_cache[key] = texture
         return texture
 
     def _texture_layers_for(self, planet):
-        key = (id(planet), self.detail_level)
+        key = (id(planet), self.detail_level, round(planet_stage(planet), 2))
         layers = self._layer_cache.get(key)
         if layers is None:
             texture = self._texture_for(planet)
@@ -355,7 +371,7 @@ class PlanetViewer3D:
         return layers
 
     def _pixel_layers_for(self, planet):
-        key = (id(planet), self.detail_level)
+        key = (id(planet), self.detail_level, round(planet_stage(planet), 2))
         pixel_layers = self._pixel_layer_cache.get(key)
         if pixel_layers is None:
             texture, clouds, cities = self._texture_layers_for(planet)
@@ -443,8 +459,12 @@ class PlanetViewer3D:
                 ambient + (1.0 - ambient) * daylight[..., None])
 
         # Aro de Fresnel: atm/espalho suave na borda do disco.
+        growth = _growth_factor(planet_stage(planet))
         fresnel = np.clip(1.0 - screen_z, 0.0, 1.0) ** 2.6 * visible
-        rim = fresnel * (0.15 + 0.85 * daylight)
+        rim_scale = {'terrestrial': 0.15 + 0.85 * growth,
+                     'asteroid': 0.20 + 0.80 * growth,
+                     'gas_giant': 0.85}.get(planet_type, 0.5 + 0.5 * growth)
+        rim = fresnel * (0.15 + 0.85 * daylight) * rim_scale
         rim_tint = {'terrestrial': (120.0, 170.0, 255.0),
                     'gas_giant': (150.0, 180.0, 225.0),
                     'asteroid': (120.0, 140.0, 170.0)}.get(
@@ -459,6 +479,7 @@ class PlanetViewer3D:
                 _sample_pixels_bilinear(
                     cloud_alpha, sample_x, sample_y) / 255.0
                 * (0.25 + 0.62 * daylight)
+                * (0.10 + 0.90 * growth)
             )
             color = (
                 color * (1.0 - cloud_opacity[..., None])
