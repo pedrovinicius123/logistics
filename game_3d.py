@@ -6,12 +6,27 @@ import pygame
 from graphics.planet_generator import (
     PLANET_SUN_DIRECTION,
     _sample_pixels_bilinear,
+    asteroid_radius_factor,
     city_light_intensity,
+    gas_giant_palette,
     generate_city_light_texture,
     generate_cloud_texture,
     generate_planet_texture,
     generate_starfield_surface,
 )
+
+PLANET_TYPE_LABELS = {
+    'terrestrial': 'Planeta terrestre',
+    'gas_giant': 'Gigante gasoso',
+    'asteroid': 'Asteroide do cinturao',
+}
+
+TRANSPORT_RESOURCES = ('Minerals', 'Food', 'Energy', 'Electronics',
+                       'Chemicals', 'Alloys')
+
+
+def planet_type_of(planet) -> str:
+    return getattr(planet, 'planet_type', 'terrestrial')
 
 
 class PlanetViewer3D:
@@ -60,6 +75,12 @@ class PlanetViewer3D:
             self._dragging = False
         return False
 
+    @staticmethod
+    def _seed_for(planet):
+        star = getattr(planet, 'parent_star', None)
+        star_name = star.name if star is not None else ''
+        return f"{star_name}:{planet.name}"
+
     def draw(self, screen, planet, title_font, body_font):
         width, height = screen.get_size()
         overlay = pygame.Surface((width, height), pygame.SRCALPHA)
@@ -98,9 +119,10 @@ class PlanetViewer3D:
         screen.blit(close_label, close_label.get_rect(
             center=self._close_rect.center))
 
+        planet_type = planet_type_of(planet)
         sphere_radius = max(50, min(card.width // 3, card.height // 2 - 90))
         sphere_radius = round(sphere_radius * self.zoom)
-        center = (card.centerx, card.centery + 12)
+        center = (card.centerx, card.centery - 6)
         self._sphere_rect = pygame.Rect(
             center[0] - sphere_radius, center[1] - sphere_radius,
             sphere_radius * 2, sphere_radius * 2,
@@ -109,41 +131,161 @@ class PlanetViewer3D:
         pygame.draw.circle(screen, (82, 133, 166), center,
                            sphere_radius + 7, 1)
 
-        capacity = planet.capacity_info()
-        intensity = city_light_intensity(
-            planet.developement, planet.population,
-            capacity['max_dev'], capacity['max_pop'],
-        )
+        rings = (planet_type == 'gas_giant'
+                 and getattr(planet, 'has_rings', False))
+        seed = self._seed_for(planet)
+        if rings:
+            self._draw_rings(screen, center, sphere_radius, seed, card,
+                             front=False)
+
+        if planet_type == 'terrestrial':
+            capacity = planet.capacity_info()
+            intensity = city_light_intensity(
+                planet.developement, planet.population,
+                capacity['max_dev'], capacity['max_pop'],
+            )
+        else:
+            intensity = 0.0
         sphere = self._render_sphere(planet, sphere_radius, intensity)
         screen.blit(sphere, (
             center[0] - sphere_radius, center[1] - sphere_radius))
-        pygame.draw.circle(screen, (182, 219, 245), center, sphere_radius, 1)
+        if planet_type == 'terrestrial':
+            pygame.draw.circle(screen, (182, 219, 245), center,
+                               sphere_radius, 1)
+        if rings:
+            self._draw_rings(screen, center, sphere_radius, seed, card,
+                             front=True)
 
         suitability = max(
             planet.life_suitability.values(), default=0.0)
+        label = PLANET_TYPE_LABELS.get(planet_type, 'Planeta')
+        if rings:
+            label += ' com anéis'
         details = (
+            f"{label}  ·  raio {planet.radius:.3f}",
             f"Desenvolvimento {planet.developement:.2f}"
             f"  |  População {planet.population:.0f}",
             f"Simbiose máxima {suitability:.2f}"
-            f"  |  Luzes urbanas {intensity:.0%}",
+            + (f"  |  Luzes urbanas {intensity:.0%}"
+               if planet_type == 'terrestrial' else ''),
             "Arraste para girar  ·  roda para zoom  ·  Esc/V fecha",
         )
-        line_y = card.bottom - 72
+        line_y = card.bottom - 88
         for index, text in enumerate(details):
             rendered = body_font.render(
-                text, True, (137, 180, 203) if index == 2
+                text, True, (137, 180, 203) if index == 3
                 else (203, 222, 235),
             )
             screen.blit(rendered, (card.x + 24, line_y + index * 19))
+
+        self._draw_logistics(screen, planet, body_font, card)
+
+    def _draw_rings(self, screen, center, radius, seed, card, front):
+        light, dark, _ = gas_giant_palette(seed)
+        color = tuple(
+            int(0.45 * dark[axis] + 0.55 * light[axis])
+            for axis in range(3))
+        cx, cy = center
+        limit = min(card.centerx - card.x, card.width // 2) - 12
+        semi_major = max(radius + 4, min(int(radius * 1.55), limit))
+        semi_minor = max(3, int(semi_major * 0.28))
+        dot = max(1, radius // 45)
+        for index in range(200):
+            t = index * math.tau / 200
+            sin_t = math.sin(t)
+            if (sin_t >= 0.0) != front:
+                continue
+            x = int(cx + semi_major * math.cos(t))
+            y = int(cy + semi_minor * sin_t)
+            pygame.draw.circle(screen, color, (x, y), dot)
+            if dot > 1:
+                pygame.draw.circle(screen, color, (x, y - 1), dot - 1)
+
+    def _draw_logistics(self, screen, planet, body_font, card):
+        panel = pygame.Rect(
+            card.right - 268, card.y + 60, 252, card.height - 150)
+        background = pygame.Surface(panel.size, pygame.SRCALPHA)
+        background.fill((8, 16, 30, 170))
+        screen.blit(background, panel.topleft)
+        pygame.draw.rect(screen, (61, 110, 142), panel, 1,
+                         border_radius=6)
+        y = panel.y + 10
+        screen.blit(body_font.render(
+            "LOGÍSTICA", True, (182, 219, 245)), (panel.x + 10, y))
+        y += 20
+
+        planet_type = planet_type_of(planet)
+        notes = {
+            'asteroid': (
+                "Núcleo minerador:",
+                "excedentes de minérios",
+                "abastecem a rede de",
+                "transportes da facção.",
+            ),
+            'gas_giant': (
+                "Plataforma energética:",
+                "superávits de energia",
+                "abastecem a rede de",
+                "transportes da facção.",
+            ),
+        }
+        if planet_type in notes:
+            color = ((203, 190, 150) if planet.is_colonized
+                     else (150, 140, 110))
+            for line in notes[planet_type]:
+                screen.blit(body_font.render(
+                    line, True, color), (panel.x + 10, y))
+                y += 17
+
+        if not planet.is_colonized or planet.faction is None:
+            screen.blit(body_font.render(
+                "Sem colônia — nenhuma rota ativa.",
+                True, (137, 180, 203)), (panel.x + 10, y))
+            return
+
+        y += 4
+        for resource in TRANSPORT_RESOURCES:
+            stored = float(planet.planet_resources.get(resource, 0.0))
+            capacity = float(planet.storage_capacity.get(resource, 0.0))
+            ratio = stored / max(1.0, capacity)
+            color = ((230, 130, 120) if ratio < 0.25 else
+                     (235, 210, 120) if ratio < 0.55 else
+                     (150, 210, 175))
+            screen.blit(body_font.render(
+                f"{resource:<12s}{stored:>7.0f} / {capacity:<7.0f}",
+                True, color), (panel.x + 10, y))
+            y += 17
+
+        y += 4
+        manager = getattr(planet.faction, 'logistics_manager', None)
+        trips = (manager.trips_serving(planet)
+                 if manager is not None else [])
+        if not trips:
+            screen.blit(body_font.render(
+                "Nenhum transporte em rota.", True, (137, 180, 203)),
+                (panel.x + 10, y))
+            y += 18
+        for ship in trips[:4]:
+            if ship.mission_kind == 'population':
+                cargo = f"{ship.population_cargo:.0f} migrantes"
+            else:
+                cargo = f"{ship.load:.0f} {ship.resource}"
+            role = ("carregando" if ship.source is planet
+                    else "descarregando")
+            screen.blit(body_font.render(
+                f"{ship.ship_id} · {role} {cargo}"[:42],
+                True, (203, 222, 235)), (panel.x + 10, y))
+            y += 17
 
     def _texture_for(self, planet):
         key = (id(planet), self.detail_level)
         texture = self._texture_cache.get(key)
         if texture is None:
-            seed = f"{planet.parent_star.name}:{planet.name}"
+            seed = self._seed_for(planet)
             texture = generate_planet_texture(
                 planet.life_suitability, seed,
-                detail_level=self.detail_level)
+                detail_level=self.detail_level,
+                planet_type=planet_type_of(planet))
             self._texture_cache[key] = texture
         return texture
 
@@ -152,15 +294,18 @@ class PlanetViewer3D:
         layers = self._layer_cache.get(key)
         if layers is None:
             texture = self._texture_for(planet)
-            seed = f"{planet.parent_star.name}:{planet.name}"
-            size = texture.get_size()
-            layers = (
-                texture,
-                generate_cloud_texture(seed, size),
-                generate_city_light_texture(
-                    planet.life_suitability, seed, size,
-                    self.detail_level),
-            )
+            seed = self._seed_for(planet)
+            if planet_type_of(planet) != 'terrestrial':
+                layers = (texture, None, None)
+            else:
+                size = texture.get_size()
+                layers = (
+                    texture,
+                    generate_cloud_texture(seed, size),
+                    generate_city_light_texture(
+                        planet.life_suitability, seed, size,
+                        self.detail_level),
+                )
             self._layer_cache[key] = layers
         return layers
 
@@ -173,14 +318,16 @@ class PlanetViewer3D:
                 np.transpose(
                     pygame.surfarray.array3d(texture), (1, 0, 2)
                 ).astype(np.float32),
-                np.transpose(
+                None if clouds is None else np.transpose(
                     pygame.surfarray.array3d(clouds), (1, 0, 2)
                 ).astype(np.float32),
-                pygame.surfarray.array_alpha(clouds).T.astype(np.float32),
-                np.transpose(
+                None if clouds is None else pygame.surfarray.array_alpha(
+                    clouds).T.astype(np.float32),
+                None if cities is None else np.transpose(
                     pygame.surfarray.array3d(cities), (1, 0, 2)
                 ).astype(np.float32),
-                pygame.surfarray.array_alpha(cities).T.astype(np.float32),
+                None if cities is None else pygame.surfarray.array_alpha(
+                    cities).T.astype(np.float32),
             )
             self._pixel_layer_cache[key] = pixel_layers
         return pixel_layers
@@ -200,10 +347,27 @@ class PlanetViewer3D:
         return geometry
 
     def _render_sphere(self, planet, radius, city_intensity):
+        pixel_layers = self._pixel_layers_for(planet)
         texture, cloud_pixels, cloud_alpha, city_pixels, city_alpha = (
-            self._pixel_layers_for(planet))
-        screen_x, screen_y, screen_z, visible = (
-            self._sphere_geometry_for(radius))
+            pixel_layers)
+        planet_type = planet_type_of(planet)
+
+        if planet_type == 'asteroid':
+            seed = self._seed_for(planet)
+            axis = (
+                np.arange(radius * 2, dtype=np.float32) + 0.5 - radius
+            ) / radius
+            raw_x, raw_y = np.meshgrid(axis, -axis)
+            theta = np.arctan2(raw_y, raw_x)
+            factor = asteroid_radius_factor(seed, theta)
+            screen_x = raw_x / factor
+            screen_y = raw_y / factor
+            z_squared = 1.0 - screen_x ** 2 - screen_y ** 2
+            visible = z_squared >= 0.0
+            screen_z = np.sqrt(np.maximum(0.0, z_squared))
+        else:
+            screen_x, screen_y, screen_z, visible = (
+                self._sphere_geometry_for(radius))
 
         cos_pitch, sin_pitch = np.cos(self.pitch), np.sin(self.pitch)
         yaw_y = screen_y * cos_pitch + screen_z * sin_pitch
@@ -226,36 +390,40 @@ class PlanetViewer3D:
         illumination = (
             world_x * sun[0] + world_y * sun[1] + world_z * sun[2])
         daylight = np.clip(illumination, 0.0, 1.0)
-        base = _sample_pixels_bilinear(
+        ambient = {'terrestrial': 0.18, 'gas_giant': 0.15,
+                   'asteroid': 0.06}.get(planet_type, 0.18)
+        color = _sample_pixels_bilinear(
             texture, sample_x, sample_y) * (
-                0.18 + 0.82 * daylight[..., None])
+                ambient + (1.0 - ambient) * daylight[..., None])
 
-        clouds = _sample_pixels_bilinear(
-            cloud_pixels, sample_x, sample_y)
-        cloud_opacity = (
-            _sample_pixels_bilinear(
-                cloud_alpha, sample_x, sample_y) / 255.0
-            * (0.25 + 0.62 * daylight)
-        )
-        color = (
-            base * (1.0 - cloud_opacity[..., None])
-            + clouds * (0.3 + 0.7 * daylight[..., None])
-            * cloud_opacity[..., None]
-        )
+        if cloud_pixels is not None:
+            clouds = _sample_pixels_bilinear(
+                cloud_pixels, sample_x, sample_y)
+            cloud_opacity = (
+                _sample_pixels_bilinear(
+                    cloud_alpha, sample_x, sample_y) / 255.0
+                * (0.25 + 0.62 * daylight)
+            )
+            color = (
+                color * (1.0 - cloud_opacity[..., None])
+                + clouds * (0.3 + 0.7 * daylight[..., None])
+                * cloud_opacity[..., None]
+            )
 
-        lights = _sample_pixels_bilinear(
-            city_pixels, sample_x, sample_y)
-        city_opacity = (
-            _sample_pixels_bilinear(
-                city_alpha, sample_x, sample_y) / 255.0
-            * math.pow(min(1.0, max(0.0, city_intensity)), 0.35)
-            * np.clip(-illumination, 0.0, 1.0) ** 1.1
-        )
-        city_opacity = np.clip(city_opacity * 1.9, 0.0, 1.0)
-        color = (
-            color * (1.0 - city_opacity[..., None])
-            + lights * city_opacity[..., None] * 1.45
-        )
+        if city_pixels is not None and city_intensity > 0:
+            lights = _sample_pixels_bilinear(
+                city_pixels, sample_x, sample_y)
+            city_opacity = (
+                _sample_pixels_bilinear(
+                    city_alpha, sample_x, sample_y) / 255.0
+                * math.pow(min(1.0, max(0.0, city_intensity)), 0.35)
+                * np.clip(-illumination, 0.0, 1.0) ** 1.1
+            )
+            city_opacity = np.clip(city_opacity * 1.9, 0.0, 1.0)
+            color = (
+                color * (1.0 - city_opacity[..., None])
+                + lights * city_opacity[..., None] * 1.45
+            )
         color = np.clip(color, 0, 255).astype(np.uint8)
 
         sphere = pygame.Surface(

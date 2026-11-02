@@ -137,6 +137,18 @@ class LogisticsManager:
         self._sync_nodes()
         return self.node_manager.plan_transfer(resource, cargo_capacity)
 
+    def trips_serving(self, planet):
+        """Transport ships currently routing cargo through one colony."""
+        trips = []
+        for ship in list(self.faction.ships.copy().values()):
+            if not getattr(ship, 'alive', False):
+                continue
+            if getattr(ship, 'design_key', None) != 'transport':
+                continue
+            if ship.source is planet or ship.destination is planet:
+                trips.append(ship)
+        return trips
+
     def plan_delivery(self, resource, cargo, origin=None):
         if cargo <= 0:
             return None
