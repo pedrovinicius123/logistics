@@ -319,14 +319,15 @@ class PlanetViewer3D:
                 (panel.x + 10, y))
             y += 18
         for ship in trips[:4]:
-            if ship.mission_kind == 'population':
-                cargo = f"{ship.population_cargo:.0f} migrantes"
-            else:
-                cargo = f"{ship.load:.0f} {ship.resource}"
+            cargo = ship.cargo_summary()
             role = ("carregando" if ship.source is planet
                     else "descarregando")
+            waiting = len(getattr(ship, 'mission_queue', ()))
+            label = f"{ship.ship_id} · {role} {cargo}"
+            if waiting:
+                label += f" (+{waiting})"
             screen.blit(body_font.render(
-                f"{ship.ship_id} · {role} {cargo}"[:42],
+                label[:42],
                 True, (203, 222, 235)), (panel.x + 10, y))
             y += 17
 
