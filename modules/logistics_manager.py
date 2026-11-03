@@ -1,5 +1,6 @@
 import math
 import threading
+from functools import reduce
 
 from logistics.modules.logistics_node import LogisticsNode
 
@@ -21,6 +22,10 @@ REFERENCE_SPEED = 5.0
 OVERLOAD_CLEAR_RATIO = 0.9
 OVERLOAD_FLIP_MONTHS = 12.0
 
+def get_faction_trade_partners(running_faction, trade_partners):
+    for faction in running_faction.game_state.factions:
+        if faction.name in trade_partners:
+            yield faction
 
 class LogisticsManager:
     """Keep civilian cargo ships available and balance colony resources.
@@ -44,10 +49,14 @@ class LogisticsManager:
         self._last_flip = 0.0
 
     def _sync_nodes(self):
-        current_planets = {
-            id(planet): planet
-            for planet in self.faction.colonies.values()
-        }
+        trade_partners = {faction_id for faction_id, treaties in self.faction.treaties.items() if 'trade' in treaties}
+        all_planets = [colony for colony in self.faction.colonies.values()]
+        partners = [p for p in get_faction_trade_partners(self.faction, trade_partners)]
+        if partners != []:
+            all_planets += reduce(lambda x,y:x+y, [list(partner.colonies) for partner in get_faction_trade_partners(self.faction, trade_partners)])
+
+        current_planets = {id(planet): planet for planet in all_planets}
+        
         for key in list(self._nodes):
             if key not in current_planets:
                 del self._nodes[key]
