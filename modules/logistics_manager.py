@@ -37,6 +37,8 @@ class LogisticsManager:
 
     def __init__(self, faction):
         self.faction = faction
+    def __init__(self, faction):
+        self.faction = faction
         self.lock = threading.RLock()
         self._pending_transport_ids = {}
         self._nodes = {}
@@ -51,15 +53,18 @@ class LogisticsManager:
     def _sync_nodes(self):
         trade_partners = {faction_id for faction_id, treaties in self.faction.treaties.items() if 'trade' in treaties}
         all_planets = [colony for colony in self.faction.colonies.values()]
-        partners = [p for p in get_faction_trade_partners(self.faction, trade_partners)]
-        if partners != []:
-            all_planets += reduce(lambda x,y:x+y, [list(partner.colonies) for partner in get_faction_trade_partners(self.faction, trade_partners)])
+        partners = list(get_faction_trade_partners(self.faction, trade_partners))
+        for p in partners:
+            all_planets.extend(p.colonies.values())
 
         current_planets = {id(planet): planet for planet in all_planets}
         
         for key in list(self._nodes):
             if key not in current_planets:
                 del self._nodes[key]
+        for key, planet in current_planets.items():
+            if key not in self._nodes:
+                self._nodes[key] = LogisticsNode(planet)
         for key, planet in current_planets.items():
             if key not in self._nodes:
                 self._nodes[key] = LogisticsNode(planet)
