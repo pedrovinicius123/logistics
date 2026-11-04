@@ -37,8 +37,6 @@ class LogisticsManager:
 
     def __init__(self, faction):
         self.faction = faction
-    def __init__(self, faction):
-        self.faction = faction
         self.lock = threading.RLock()
         self._pending_transport_ids = {}
         self._nodes = {}
@@ -411,9 +409,7 @@ class LogisticsManager:
         live_ship_ids = set(faction.ships)
         queued_ship_ids = self._queued_ship_ids()
         for ship_id, expiry in list(self._pending_transport_ids.items()):
-            if ship_id in live_ship_ids:
-                self._pending_transport_ids.pop(ship_id, None)
-            elif now >= expiry and ship_id not in queued_ship_ids:
+            if ship_id in live_ship_ids or (now >= expiry and ship_id not in queued_ship_ids):            
                 self._pending_transport_ids.pop(ship_id, None)
 
         desired = self._desired_fleet()
@@ -431,6 +427,9 @@ class LogisticsManager:
             self._pending_transport_ids[ship_id] = (
                 now + build_time * 2.0
             )
+
+        for ship in faction.ships.copy().values():
+            yield from ship.ai()
 
     def _desired_fleet(self):
         colony_count = len(self.faction.colonies)
